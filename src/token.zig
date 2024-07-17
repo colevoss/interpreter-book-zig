@@ -50,7 +50,13 @@ pub const TokenType = enum {
     neq,
 };
 
-pub const Token = struct { type: TokenType, literal: []const u8, line: usize, start: usize, end: usize };
+pub const Token = struct {
+    type: TokenType,
+    literal: []const u8,
+    line: usize,
+    start: usize,
+    end: usize,
+};
 
 test "token" {
     const token = Token{

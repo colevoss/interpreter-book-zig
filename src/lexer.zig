@@ -330,16 +330,14 @@ test "nextToken basic tokens" {
 }
 
 test "nextToken complex tokens" {
-    const code =
-        \\let five = 5;
-        \\let ten = 10;
-        \\let add = fn(x, y) {
-        \\  x + y;
-        \\};
-        \\let result = add(five, ten);
-        \\==
-        \\!=
-    ;
+    var file = try std.fs.cwd().openFile("test/test_lexer.txt", .{});
+    defer file.close();
+    const allocator = std.testing.allocator;
+
+    const stat = try file.stat();
+    const code = try file.readToEndAlloc(allocator, stat.size);
+
+    defer allocator.free(code);
 
     var lexer = Lexer.init(code);
 
@@ -382,13 +380,13 @@ test "nextToken complex tokens" {
         .{ .type = token.TokenType.semicolon, .literal = ";", .line = 6, .start = 28, .end = 28 },
         .{ .type = token.TokenType.eq, .literal = "==", .line = 7, .start = 1, .end = 2 },
         .{ .type = token.TokenType.neq, .literal = "!=", .line = 8, .start = 1, .end = 2 },
-        .{ .type = token.TokenType.eof, .literal = "", .line = 8, .start = 0, .end = 0 },
+        .{ .type = token.TokenType.eof, .literal = "", .line = 9, .start = 0, .end = 0 },
     };
 
     for (cases) |case| {
         const t = lexer.nextToken();
 
-        std.debug.print("Type: {}, Literal: {s}, Line: {}, Start: {}, End: {}\n", .{ t.type, t.literal, t.line, t.start, t.end });
+        // std.debug.print("Type: {}, Literal: {s}, Line: {}, Start: {}, End: {}\n", .{ t.type, t.literal, t.line, t.start, t.end });
         try std.testing.expect(t.type == case.type);
         try std.testing.expect(t.line == case.line);
         try std.testing.expect(t.start == case.start);

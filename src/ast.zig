@@ -1,42 +1,60 @@
 const std = @import("std");
-const t = @import("token.zig");
+const token = @import("token.zig");
+const Token = token.Token;
+const Allocator = std.mem.Allocator;
 
-pub const Program = struct {
-    statements: []Statement,
+pub const Expression = union(enum) {
+    identifier: Identifier,
 
-    pub fn tokenLiteral(self: *Program) []const u8 {
-        if (self.statements.len == 0) {
-            return "";
-        }
-
-        return self.statements[0].tokenLiteral();
-    }
+    pub const Identifier = struct {
+        token: Token,
+        value: []const u8,
+    };
 };
 
 pub const Statement = union(enum) {
-    let: *const LetStatement,
+    let: Let,
 
-    pub fn tokenLiteral(self: Statement) []const u8 {
-        return switch (self) {
-            Statement.let => |*let| let.*.tokenValue(),
+    ret: Return,
+
+    /// Let statement:
+    /// let myVar = 5;
+    pub const Let = struct {
+        // the "let" token
+        token: Token,
+
+        // the name of the variable
+        name: Expression.Identifier,
+
+        // the value of the variable which itself could be an expression
+        value: Expression,
+    };
+
+    pub const Return = struct {
+        token: Token,
+        value: Expression,
+    };
+};
+
+pub const Program = struct {
+    statements: std.ArrayList(Statement),
+    // allocator: Allocator,
+
+    pub fn init(allocator: Allocator) Program {
+        const statements = std.ArrayList(Statement).init(allocator);
+
+        return Program{
+            .statements = statements,
+            // .allocator = allocator,
         };
     }
-};
 
-pub const Expression = union(enum) {
-    pub fn tokenLiteral(_: Expression) []const u8 {
-        return "";
+    pub fn deinit(self: *Program) void {
+        self.statements.deinit();
+    }
+
+    pub fn addStatement(self: *Program, statement: Statement) !usize {
+        try self.statements.append(statement);
+        return self.statements.items.len;
     }
 };
-
-pub const LetStatement = struct {
-    fn tokenValue(_: *LetStatement) []const u8 {
-        return "hi";
-    }
-};
-
-test "t" {
-    const statement = Statement{ .let = &LetStatement{} };
-
-    try std.testing.expect(std.mem.eql(u8, statement.tokenLiteral(), "hi"));
-}
