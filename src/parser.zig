@@ -17,13 +17,55 @@ pub const Parser = struct {
     currentToken: token.Token,
     peekToken: token.Token,
 
-    pub fn init(lex: *lexer.Lexer) Parser {
+    errors: std.ArrayList([]const u8),
+
+    allocator: Allocator,
+
+    pub const Precedence = enum(u8) {
+        lowest,
+
+        // ==
+        equals,
+
+        // > or <
+        lessgreater,
+
+        // +
+        sum,
+
+        // *
+        product,
+
+        // -X or !X
+        prefix,
+
+        // myFunction(X)
+        call,
+    };
+
+    pub fn init(allocator: Allocator, lex: *lexer.Lexer) Parser {
         var parser: Parser = undefined;
         parser.lexer = lex;
 
+        parser.allocator = allocator;
+        parser.errors = std.ArrayList([]const u8).init(parser.allocator);
+
+        parser.nextToken();
         parser.nextToken();
 
         return parser;
+    }
+
+    pub fn deini(self: *Parser) void {
+        for (self.errors.items) |e| {
+            self.allocator.free(e);
+        }
+
+        self.errors.deinit();
+    }
+
+    pub fn errorCount(self: *Parser) usize {
+        return self.errors.items.len;
     }
 
     pub fn nextToken(self: *Parser) void {
@@ -36,27 +78,33 @@ pub const Parser = struct {
 
         while (self.currentToken.type != token.TokenType.eof) : (self.nextToken()) {
             if (self.parseStatement()) |statement| {
-                _ = try program.addStatement(statement);
+                try program.addStatement(statement);
             }
-
-            // const stmt = self.parseStatement();
-            // if (stmt) |s| {
-            //     _ = try program.addStatement(s);
-            // }
         }
 
         return program;
     }
 
-    pub fn parseStatement(self: *Parser) ?Statement {
-        return switch (self.currentToken.type) {
-            .let => self.parseLetStatement(),
-            .ret => self.parseReturnStatement(),
-            else => return null,
+    fn addError(self: *Parser, comptime err: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.allocator, err, args) catch |fmtErr| {
+            std.log.err("Could not format error: {}", .{fmtErr});
+            return;
+        };
+
+        self.errors.append(msg) catch |caught| {
+            std.log.err("Could not add error: \"{s}\" ({})", .{ err, caught });
         };
     }
 
-    pub fn parseLetStatement(self: *Parser) ?Statement {
+    fn parseStatement(self: *Parser) ?Statement {
+        return switch (self.currentToken.type) {
+            .let => self.parseLetStatement(),
+            .ret => self.parseReturnStatement(),
+            else => self.parseExpressionStatement(),
+        };
+    }
+
+    fn parseLetStatement(self: *Parser) ?Statement {
         var statement: Statement.Let = undefined;
         statement.token = self.currentToken;
 
@@ -95,11 +143,106 @@ pub const Parser = struct {
         return Statement{ .ret = ret };
     }
 
+    // ===============================================
+    // Expressions
+    // ===============================================
+    fn parseExpressionStatement(self: *Parser) ?Statement {
+        const tok = self.currentToken;
+        const expression = self.parseExpression(.lowest);
+
+        if (expression == null) {
+            return null;
+        }
+
+        if (self.peekTokenIs(.semicolon)) {
+            self.nextToken();
+        }
+
+        return Statement{
+            .expression = .{
+                .expression = expression,
+                .token = tok,
+            },
+        };
+    }
+
+    fn parseExpression(self: *Parser, _: Parser.Precedence) ?Expression {
+        const prefix = self.parsePrefix(self.currentToken.type);
+
+        if (prefix == null) {
+            return null;
+        }
+
+        const leftExp = prefix;
+
+        return leftExp;
+    }
+
+    fn parsePrefix(self: *Parser, tokenType: TokenType) ?Expression {
+        return switch (tokenType) {
+            .ident => self.parseIdentifier(),
+            .int => self.parseIntLiteral(),
+            // .bang, .minus => self.parsePrefixExpression(),
+            else => null,
+        };
+    }
+
+    // fn parsePrefixExpression(self: *Parser) ?Expression {
+    //     const tok = self.currentToken;
+    //     const operator = self.currentToken.literal;
+    //
+    //     self.nextToken();
+    //
+    //     const right = self.parseExpression(.prefix);
+    //
+    //     return Expression{
+    //         .prefix = .{
+    //             .token = tok,
+    //             .operator = operator,
+    //             .right = right,
+    //         },
+    //     };
+    // }
+
+    fn parseIdentifier(self: *Parser) Expression {
+        const identifier = Expression.Identifier{
+            .token = self.currentToken,
+            .value = self.currentToken.literal,
+        };
+
+        return Expression{ .identifier = identifier };
+    }
+
+    fn parseIntLiteral(self: *Parser) ?Expression {
+        const integer = std.fmt.parseInt(i64, self.currentToken.literal, 10) catch |parseIntErr| {
+            self.addError(
+                "could not parse {s} as integer at {d}:{d}: {s}",
+                .{
+                    self.currentToken.literal,
+                    self.currentToken.line,
+                    self.currentToken.start,
+                    @errorName(parseIntErr),
+                },
+            );
+
+            return null;
+        };
+
+        return Expression{
+            .integerLiteral = .{
+                .value = integer,
+                .token = self.currentToken,
+            },
+        };
+    }
+
     fn expectPeek(self: *Parser, tokenType: TokenType) bool {
         if (self.peekTokenIs(tokenType)) {
             self.nextToken();
             return true;
         }
+
+        self.peekError(tokenType);
 
         return false;
     }
@@ -111,6 +254,22 @@ pub const Parser = struct {
     fn peekTokenIs(self: *Parser, tokenType: TokenType) bool {
         return self.peekToken.type == tokenType;
     }
+
+    fn peekError(self: *Parser, tokenType: TokenType) void {
+        const message = std.fmt.allocPrint(self.allocator, "Expected {s} token at {d}:{d} but received \"{s}\"", .{
+            @tagName(tokenType),
+            self.peekToken.line,
+            self.peekToken.start,
+            self.peekToken.literal,
+        }) catch |err| {
+            std.log.err("Error creating peekError message {}", .{err});
+            return;
+        };
+
+        self.errors.append(message) catch |err| {
+            std.log.err("Error creating peekError message {}", .{err});
+        };
+    }
 };
 
 test "parsing let statement" {
@@ -119,9 +278,11 @@ test "parsing let statement" {
     ;
 
     var lex = lexer.Lexer.init(code);
-    var parser = Parser.init(&lex);
-
     const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
 
@@ -139,9 +300,12 @@ test "parsing return statement" {
     ;
 
     var lex = lexer.Lexer.init(code);
-    var parser = Parser.init(&lex);
 
     const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
 
@@ -150,4 +314,80 @@ test "parsing return statement" {
     const statement = program.statements.items[0];
 
     try expect(statement == .ret);
+}
+
+test "parse let statement error" {
+    const code =
+        \\let -
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    try expect(parser.errorCount() == 1);
+    try expect(std.mem.eql(u8, parser.errors.items[0], "Expected ident token at 1:5 but received \"-\""));
+}
+
+test "parse identifer statement expression" {
+    const code =
+        \\hello;
+        \\goodbye;
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    try expect(program.statements.items[0] == .expression);
+    try expect(program.statements.items[1] == .expression);
+}
+
+test "parse integer statement expression" {
+    const code =
+        \\5;
+        \\10;
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    try expect(program.statements.items[0] == .expression);
+    try expect(program.statements.items[0].expression.expression.?.integerLiteral.value == 5);
+    try expect(program.statements.items[1] == .expression);
+    try expect(program.statements.items[1].expression.expression.?.integerLiteral.value == 10);
+}
+
+test "parse integer failure" {
+    const code =
+        \\100000000000000000000000000000000000000000000000000000000;
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deini();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    try expect(parser.errorCount() == 1);
+    try expect(std.mem.eql(u8, parser.errors.items[0], "could not parse 100000000000000000000000000000000000000000000000000000000 as integer at 1:1: Overflow"));
 }
