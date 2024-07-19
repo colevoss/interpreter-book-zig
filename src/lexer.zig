@@ -17,6 +17,16 @@ pub const Lexer = struct {
     // Current char under examination
     ch: u8 = 0,
 
+    const identifierMap = std.StaticStringMap(token.TokenType).initComptime(.{
+        .{ "let", .let },
+        .{ "fn", .function },
+        .{ "true", .true },
+        .{ "false", .false },
+        .{ "if", .ifst },
+        .{ "else", .elsest },
+        .{ "return", .ret },
+    });
+
     pub fn init(input: []const u8) Lexer {
         var lexer = Lexer{
             .input = input,
@@ -243,32 +253,8 @@ pub const Lexer = struct {
     }
 
     fn lookupIdent(ident: []const u8) token.TokenType {
-        if (std.mem.eql(u8, ident, "let")) {
-            return .let;
-        }
-
-        if (std.mem.eql(u8, ident, "fn")) {
-            return .function;
-        }
-
-        if (std.mem.eql(u8, ident, "true")) {
-            return .true;
-        }
-
-        if (std.mem.eql(u8, ident, "false")) {
-            return .false;
-        }
-
-        if (std.mem.eql(u8, ident, "if")) {
-            return .ifst;
-        }
-
-        if (std.mem.eql(u8, ident, "else")) {
-            return .elsest;
-        }
-
-        if (std.mem.eql(u8, ident, "return")) {
-            return .ret;
+        if (identifierMap.get(ident)) |identType| {
+            return identType;
         }
 
         return .ident;

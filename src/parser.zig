@@ -21,6 +21,8 @@ pub const Parser = struct {
 
     allocator: Allocator,
 
+    arena: std.heap.ArenaAllocator,
+
     pub const Precedence = enum(u8) {
         lowest,
 
@@ -48,6 +50,8 @@ pub const Parser = struct {
         parser.lexer = lex;
 
         parser.allocator = allocator;
+
+        parser.arena = std.heap.ArenaAllocator.init(parser.allocator);
         parser.errors = std.ArrayList([]const u8).init(parser.allocator);
 
         parser.nextToken();
@@ -56,12 +60,16 @@ pub const Parser = struct {
         return parser;
     }
 
-    pub fn deini(self: *Parser) void {
-        for (self.errors.items) |e| {
-            self.allocator.free(e);
-        }
+    pub fn deinit(self: *Parser) void {
+        // Free each error string
+        // for (self.errors.items) |e| {
+        //     self.allocator.free(e);
+        // }
 
+        // deinit errors arraylist
         self.errors.deinit();
+        // deinit all arena allocations
+        self.arena.deinit();
     }
 
     pub fn errorCount(self: *Parser) usize {
@@ -77,7 +85,7 @@ pub const Parser = struct {
         var program = ast.Program.init(allocator);
 
         while (self.currentToken.type != token.TokenType.eof) : (self.nextToken()) {
-            if (self.parseStatement()) |statement| {
+            if (try self.parseStatement()) |statement| {
                 try program.addStatement(statement);
             }
         }
@@ -85,68 +93,49 @@ pub const Parser = struct {
         return program;
     }
 
-    fn addError(self: *Parser, comptime err: []const u8, args: anytype) void {
-        const msg = std.fmt.allocPrint(self.allocator, err, args) catch |fmtErr| {
-            std.log.err("Could not format error: {}", .{fmtErr});
-            return;
-        };
-
-        self.errors.append(msg) catch |caught| {
-            std.log.err("Could not add error: \"{s}\" ({})", .{ err, caught });
-        };
-    }
-
-    fn parseStatement(self: *Parser) ?Statement {
+    fn parseStatement(self: *Parser) !?Statement {
         return switch (self.currentToken.type) {
             .let => self.parseLetStatement(),
             .ret => self.parseReturnStatement(),
-            else => self.parseExpressionStatement(),
+            else => try self.parseExpressionStatement(),
         };
     }
 
     fn parseLetStatement(self: *Parser) ?Statement {
-        var statement: Statement.Let = undefined;
-        statement.token = self.currentToken;
-
-        // variable name
+        // let statements need to be followed by an identifier
         if (!self.expectPeek(.ident)) {
             return null;
         }
 
-        statement.name = Expression.Identifier{
-            .token = self.currentToken,
-            .value = self.currentToken.literal,
-        };
+        // TODO: Set value expression
+        var let: Statement.Let = undefined;
+        let.name = self.currentToken.literal;
 
-        // equals sign
-        if (!self.expectPeek(.assign)) {
-            return null;
-        }
-
-        // TODO: Skip until semi colon
+        // TODO: Skip value expression for now
         while (!self.currentTokenIs(.semicolon)) {
             self.nextToken();
         }
 
-        return Statement{ .let = statement };
+        return Statement.init(self.currentToken, .{ .let = let });
     }
 
-    pub fn parseReturnStatement(self: *Parser) ?Statement {
-        var ret: Statement.Return = undefined;
-        ret.token = self.currentToken;
+    fn parseReturnStatement(self: *Parser) ?Statement {
+        const statement = Statement.init(self.currentToken, .{
+            // TODO: PLACEHODLER FOR ACTUAL EXPRESSION
+            .@"return" = null,
+        });
 
-        // TODO: parse identifier
         while (!self.currentTokenIs(.semicolon)) {
             self.nextToken();
         }
 
-        return Statement{ .ret = ret };
+        return statement;
     }
 
     // ===============================================
     // Expressions
     // ===============================================
-    fn parseExpressionStatement(self: *Parser) ?Statement {
+    fn parseExpressionStatement(self: *Parser) !?Statement {
         const tok = self.currentToken;
         const expression = self.parseExpression(.lowest);
 
@@ -154,20 +143,22 @@ pub const Parser = struct {
             return null;
         }
 
+        const exprStatement = Statement.ExpressionStatement{
+            .expression = expression.?,
+        };
+
         if (self.peekTokenIs(.semicolon)) {
             self.nextToken();
         }
 
-        return Statement{
-            .expression = .{
-                .expression = expression,
-                .token = tok,
-            },
-        };
+        return Statement.init(tok, .{ .expression = exprStatement });
     }
 
-    fn parseExpression(self: *Parser, _: Parser.Precedence) ?Expression {
-        const prefix = self.parsePrefix(self.currentToken.type);
+    fn parseExpression(self: *Parser, _: Parser.Precedence) ?*Expression {
+        const prefix = self.parsePrefix(self.currentToken.type) catch |err| {
+            std.log.err("Error parsing prefix {}", .{err});
+            return null;
+        };
 
         if (prefix == null) {
             return null;
@@ -178,42 +169,42 @@ pub const Parser = struct {
         return leftExp;
     }
 
-    fn parsePrefix(self: *Parser, tokenType: TokenType) ?Expression {
+    fn parsePrefix(self: *Parser, tokenType: TokenType) !?*Expression {
         return switch (tokenType) {
-            .ident => self.parseIdentifier(),
+            .ident => try self.parseIdentifier(),
             .int => self.parseIntLiteral(),
-            // .bang, .minus => self.parsePrefixExpression(),
+            .bang, .minus => try self.parsePrefixExpression(),
             else => null,
         };
     }
 
-    // fn parsePrefixExpression(self: *Parser) ?Expression {
-    //     const tok = self.currentToken;
-    //     const operator = self.currentToken.literal;
-    //
-    //     self.nextToken();
-    //
-    //     const right = self.parseExpression(.prefix);
-    //
-    //     return Expression{
-    //         .prefix = .{
-    //             .token = tok,
-    //             .operator = operator,
-    //             .right = right,
-    //         },
-    //     };
-    // }
+    fn parsePrefixExpression(self: *Parser) !*Expression {
+        const tok = self.currentToken;
+        self.nextToken();
 
-    fn parseIdentifier(self: *Parser) Expression {
-        const identifier = Expression.Identifier{
-            .token = self.currentToken,
-            .value = self.currentToken.literal,
+        const right = self.parseExpression(.prefix);
+
+        const prefix = Expression.Prefix{
+            .right = right,
+            .operator = tok.literal,
         };
 
-        return Expression{ .identifier = identifier };
+        return try Expression.initAlloc(self.arena.allocator(), tok, .{
+            .prefix = prefix,
+        });
     }
 
-    fn parseIntLiteral(self: *Parser) ?Expression {
+    fn parseIdentifier(self: *Parser) !*Expression {
+        return try Expression.initAlloc(
+            self.arena.allocator(),
+            self.currentToken,
+            .{
+                .identifier = self.currentToken.literal,
+            },
+        );
+    }
+
+    fn parseIntLiteral(self: *Parser) !?*Expression {
         const integer = std.fmt.parseInt(i64, self.currentToken.literal, 10) catch |parseIntErr| {
             self.addError(
                 "could not parse {s} as integer at {d}:{d}: {s}",
@@ -228,12 +219,13 @@ pub const Parser = struct {
             return null;
         };
 
-        return Expression{
-            .integerLiteral = .{
-                .value = integer,
-                .token = self.currentToken,
+        return try Expression.initAlloc(
+            self.arena.allocator(),
+            self.currentToken,
+            .{
+                .integer = integer,
             },
-        };
+        );
     }
 
     fn expectPeek(self: *Parser, tokenType: TokenType) bool {
@@ -256,18 +248,22 @@ pub const Parser = struct {
     }
 
     fn peekError(self: *Parser, tokenType: TokenType) void {
-        const message = std.fmt.allocPrint(self.allocator, "Expected {s} token at {d}:{d} but received \"{s}\"", .{
+        self.addError("Expected {s} token at {d}:{d} but received \"{s}\"", .{
             @tagName(tokenType),
             self.peekToken.line,
             self.peekToken.start,
             self.peekToken.literal,
-        }) catch |err| {
-            std.log.err("Error creating peekError message {}", .{err});
+        });
+    }
+
+    fn addError(self: *Parser, comptime err: []const u8, args: anytype) void {
+        const msg = std.fmt.allocPrint(self.arena.allocator(), err, args) catch |fmtErr| {
+            std.log.err("Could not format error: {}", .{fmtErr});
             return;
         };
 
-        self.errors.append(message) catch |err| {
-            std.log.err("Error creating peekError message {}", .{err});
+        self.errors.append(msg) catch |caught| {
+            std.log.err("Could not add error: \"{s}\" ({})", .{ err, caught });
         };
     }
 };
@@ -281,7 +277,7 @@ test "parsing let statement" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
@@ -290,8 +286,8 @@ test "parsing let statement" {
 
     const statement = program.statements.items[0];
 
-    try expect(statement == .let);
-    try expect(std.mem.eql(u8, statement.let.name.value, "a"));
+    try expect(statement.type == .let);
+    try expect(std.mem.eql(u8, statement.type.let.name, "a"));
 }
 
 test "parsing return statement" {
@@ -304,7 +300,7 @@ test "parsing return statement" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
@@ -313,7 +309,7 @@ test "parsing return statement" {
 
     const statement = program.statements.items[0];
 
-    try expect(statement == .ret);
+    try expect(statement.type == .@"return");
 }
 
 test "parse let statement error" {
@@ -325,7 +321,7 @@ test "parse let statement error" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
@@ -344,13 +340,13 @@ test "parse identifer statement expression" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
 
-    try expect(program.statements.items[0] == .expression);
-    try expect(program.statements.items[1] == .expression);
+    try expect(program.statements.items[0].type == .expression);
+    try expect(program.statements.items[1].type == .expression);
 }
 
 test "parse integer statement expression" {
@@ -363,15 +359,15 @@ test "parse integer statement expression" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
 
-    try expect(program.statements.items[0] == .expression);
-    try expect(program.statements.items[0].expression.expression.?.integerLiteral.value == 5);
-    try expect(program.statements.items[1] == .expression);
-    try expect(program.statements.items[1].expression.expression.?.integerLiteral.value == 10);
+    try expect(program.statements.items[0].type == .expression);
+    try expect(program.statements.items[0].type.expression.expression.type.integer == 5);
+    try expect(program.statements.items[1].type == .expression);
+    try expect(program.statements.items[1].type.expression.expression.type.integer == 10);
 }
 
 test "parse integer failure" {
@@ -383,11 +379,40 @@ test "parse integer failure" {
     const allocator = std.testing.allocator;
 
     var parser = Parser.init(allocator, &lex);
-    defer parser.deini();
+    defer parser.deinit();
 
     var program = try parser.parseProgram(allocator);
     defer program.deinit();
 
     try expect(parser.errorCount() == 1);
     try expect(std.mem.eql(u8, parser.errors.items[0], "could not parse 100000000000000000000000000000000000000000000000000000000 as integer at 1:1: Overflow"));
+}
+
+test "parse prefix expression" {
+    const code =
+        \\-10;
+        \\!not;
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deinit();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    const minusExpressStatement = program.statements.items[0];
+    const bangExpressStatement = program.statements.items[1];
+
+    try expect(minusExpressStatement.type.expression.expression.type == .prefix);
+    try expect(minusExpressStatement.type.expression.expression.token.type == .minus);
+    try expect(minusExpressStatement.type.expression.expression.type.prefix.right.?.type == .integer);
+    try expect(std.mem.eql(u8, minusExpressStatement.type.expression.expression.type.prefix.operator, "-"));
+
+    try expect(bangExpressStatement.type.expression.expression.type == .prefix);
+    try expect(bangExpressStatement.type.expression.expression.token.type == .bang);
+    try expect(bangExpressStatement.type.expression.expression.type.prefix.right.?.type == .identifier);
+    try expect(std.mem.eql(u8, bangExpressStatement.type.expression.expression.type.prefix.operator, "!"));
 }

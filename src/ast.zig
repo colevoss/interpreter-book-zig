@@ -3,81 +3,82 @@ const token = @import("token.zig");
 const Token = token.Token;
 const Allocator = std.mem.Allocator;
 
-pub const Exp = struct {
+pub const Expression = struct {
     token: Token,
     type: ExpressionType,
 
+    pub fn init(tok: Token, expType: ExpressionType) Expression {
+        return .{
+            .token = tok,
+            .type = expType,
+        };
+    }
+
+    pub fn initAlloc(allocator: Allocator, tok: Token, expType: ExpressionType) std.mem.Allocator.Error!*Expression {
+        const expression = try allocator.create(Expression);
+
+        expression.* = .{
+            .token = tok,
+            .type = expType,
+        };
+
+        return expression;
+    }
+
+    pub fn invalidAlloc(allocator: Allocator, tok: Token) std.mem.Allocator.Error!*Expression {
+        return Expression.initAlloc(allocator, tok, .{
+            .invalid = tok.literal,
+        });
+    }
+
     pub const ExpressionType = union(enum) {
         identifier: []const u8,
-
         integer: i64,
-
         prefix: Prefix,
     };
 
     pub const Prefix = struct {
         operator: []const u8,
-        right: *Expression,
+        // TODO: Should this be an optional?
+        right: ?*Expression,
     };
 };
 
-pub const Expression = union(enum) {
-    identifier: Identifier,
+pub const Statement = struct {
+    token: Token,
 
-    integerLiteral: IntegerLiteral,
+    type: StatementType,
 
-    // prefix: Prefix,
+    pub fn init(tok: Token, stmtType: StatementType) Statement {
+        return .{
+            .token = tok,
+            .type = stmtType,
+        };
+    }
 
-    pub const Identifier = struct {
-        token: Token,
-        value: []const u8,
+    pub fn initAlloc(allocator: Allocator, tok: Token, stmtType: StatementType) !*Statement {
+        const stmt = try allocator.create(Statement);
+        stmt.* = .{
+            .token = tok,
+            .type = stmtType,
+        };
+
+        return stmt;
+    }
+
+    pub const StatementType = union(enum) {
+        let: Let,
+        @"return": ?*Expression,
+        expression: ExpressionStatement,
     };
 
-    pub const IntegerLiteral = struct {
-        token: Token,
-        value: i64,
-    };
-};
-
-// pub const Prefix = struct {
-//     token: Token,
-//     operator: []const u8,
-//     right: Expression,
-// };
-
-pub const Statement = union(enum) {
-    let: Let,
-
-    ret: Return,
-
-    expression: ExpressionStatement,
-
-    /// Let statement:
-    /// let myVar = 5;
     pub const Let = struct {
-        // the "let" token
-        token: Token,
-
-        // the name of the variable
-        name: Expression.Identifier,
-
-        // the value of the variable which itself could be an expression
-        value: Expression,
+        name: []const u8,
+        value: *Expression,
     };
 
-    // Return statement
-    pub const Return = struct {
-        token: Token,
-        value: Expression,
-    };
-
-    // This is when a line of code is just an expression without a let or return
-    // example:
-    // let x = 5; <-- let statement
-    // x + 10;    <-- expression statement
     pub const ExpressionStatement = struct {
-        token: Token, // first token of the expression
-        expression: ?Expression,
+        expression: *Expression,
     };
 };
 
@@ -89,7 +90,6 @@ pub const Program = struct {
 
         return Program{
             .statements = statements,
-            // .allocator = allocator,
         };
     }
 
