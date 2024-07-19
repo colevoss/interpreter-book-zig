@@ -43,6 +43,20 @@ pub const Parser = struct {
 
         // myFunction(X)
         call,
+
+        pub fn forToken(tok: TokenType) Precedence {
+            return switch (tok) {
+                .eq, .neq => .equals,
+                .lt, .gt => .lessgreater,
+                .plus, .minus => .sum,
+                .asterisk, .slash => .product,
+                else => .lowest,
+            };
+        }
+
+        pub fn int(self: Precedence) u8 {
+            return @intFromEnum(self);
+        }
     };
 
     pub fn init(allocator: Allocator, lex: *lexer.Lexer) Parser {
@@ -102,6 +116,7 @@ pub const Parser = struct {
     }
 
     fn parseLetStatement(self: *Parser) ?Statement {
+        const tok = self.currentToken;
         // let statements need to be followed by an identifier
         if (!self.expectPeek(.ident)) {
             return null;
@@ -116,7 +131,9 @@ pub const Parser = struct {
             self.nextToken();
         }
 
-        return Statement.init(self.currentToken, .{ .let = let });
+        return Statement.init(tok, .{
+            .let = let,
+        });
     }
 
     fn parseReturnStatement(self: *Parser) ?Statement {
@@ -154,9 +171,9 @@ pub const Parser = struct {
         return Statement.init(tok, .{ .expression = exprStatement });
     }
 
-    fn parseExpression(self: *Parser, _: Parser.Precedence) ?*Expression {
+    fn parseExpression(self: *Parser, precedence: Parser.Precedence) ?*Expression {
         const prefix = self.parsePrefix(self.currentToken.type) catch |err| {
-            std.log.err("Error parsing prefix {}", .{err});
+            std.log.err("Error parsing prefix {}\n", .{err});
             return null;
         };
 
@@ -164,7 +181,19 @@ pub const Parser = struct {
             return null;
         }
 
-        const leftExp = prefix;
+        var leftExp = prefix.?;
+
+        while (!self.peekTokenIs(.semicolon) and precedence.int() < self.peekPrecedence().int()) {
+            if (!shouldParseInfix(self.peekToken.type)) {
+                return leftExp;
+            }
+
+            self.nextToken();
+            leftExp = self.parseInfixExpression(leftExp) catch |err| {
+                std.log.err("Error parsing infix: {}\n", .{err});
+                return null;
+            };
+        }
 
         return leftExp;
     }
@@ -178,6 +207,31 @@ pub const Parser = struct {
         };
     }
 
+    // fn parseInfix(self: *Parser, tokenType: TokenType, left: *Expression) !?*Expression {
+    fn shouldParseInfix(tokenType: TokenType) bool {
+        return switch (tokenType) {
+            // .eq, .neq, .plus, .minus, .asterisk, .slash, .lt, .gt => self.parseInfixExpression(left),
+            .eq, .neq, .plus, .minus, .asterisk, .slash, .lt, .gt => true,
+            else => false,
+        };
+    }
+
+    fn parseInfixExpression(self: *Parser, left: *Expression) !*Expression {
+        const tok = self.currentToken;
+        const precedence = self.currentPrecedence();
+        self.nextToken();
+
+        const right = self.parseExpression(precedence) orelse unreachable;
+
+        return try Expression.initAlloc(self.arena.allocator(), tok, .{
+            .infix = .{
+                .operator = tok.literal,
+                .left = left,
+                .right = right,
+            },
+        });
+    }
+
     fn parsePrefixExpression(self: *Parser) !*Expression {
         const tok = self.currentToken;
         self.nextToken();
@@ -188,7 +242,6 @@ pub const Parser = struct {
             .right = right,
             .operator = tok.literal,
         };
-
         return try Expression.initAlloc(self.arena.allocator(), tok, .{
             .prefix = prefix,
         });
@@ -256,6 +309,14 @@ pub const Parser = struct {
         });
     }
 
+    fn peekPrecedence(self: *Parser) Precedence {
+        return Precedence.forToken(self.peekToken.type);
+    }
+
+    fn currentPrecedence(self: *Parser) Precedence {
+        return Precedence.forToken(self.currentToken.type);
+    }
+
     fn addError(self: *Parser, comptime err: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.arena.allocator(), err, args) catch |fmtErr| {
             std.log.err("Could not format error: {}", .{fmtErr});
@@ -287,6 +348,7 @@ test "parsing let statement" {
     const statement = program.statements.items[0];
 
     try expect(statement.type == .let);
+    try expect(statement.token.type == .let);
     try expect(std.mem.eql(u8, statement.type.let.name, "a"));
 }
 
@@ -415,4 +477,35 @@ test "parse prefix expression" {
     try expect(bangExpressStatement.type.expression.expression.token.type == .bang);
     try expect(bangExpressStatement.type.expression.expression.type.prefix.right.?.type == .identifier);
     try expect(std.mem.eql(u8, bangExpressStatement.type.expression.expression.type.prefix.operator, "!"));
+}
+
+test "parse infix expressions" {
+    const code =
+        \\10 + 10;
+        \\5 + 10;
+        \\10000000 + 10000000;
+    ;
+
+    var lex = lexer.Lexer.init(code);
+    const allocator = std.testing.allocator;
+
+    var parser = Parser.init(allocator, &lex);
+    defer parser.deinit();
+
+    var program = try parser.parseProgram(allocator);
+    defer program.deinit();
+
+    const cases = [_]struct { i64, []const u8, i64 }{
+        .{ 10, "+", 10 },
+        .{ 5, "+", 10 },
+        .{ 10000000, "+", 10000000 },
+    };
+
+    for (cases, 0..) |case, i| {
+        const expr = program.statements.items[i];
+        try expect(expr.type.expression.expression.type == .infix);
+        try expect(expr.type.expression.expression.type.infix.left.type.integer == case[0]);
+        try expect(std.mem.eql(u8, expr.type.expression.expression.type.infix.operator, case[1]));
+        try expect(expr.type.expression.expression.type.infix.right.type.integer == case[2]);
+    }
 }

@@ -14,6 +14,10 @@ pub const Expression = struct {
         };
     }
 
+    pub fn print(self: *Expression, writer: anytype) !void {
+        try self.type.print(writer);
+    }
+
     pub fn initAlloc(allocator: Allocator, tok: Token, expType: ExpressionType) std.mem.Allocator.Error!*Expression {
         const expression = try allocator.create(Expression);
 
@@ -25,22 +29,50 @@ pub const Expression = struct {
         return expression;
     }
 
-    pub fn invalidAlloc(allocator: Allocator, tok: Token) std.mem.Allocator.Error!*Expression {
-        return Expression.initAlloc(allocator, tok, .{
-            .invalid = tok.literal,
-        });
-    }
-
     pub const ExpressionType = union(enum) {
         identifier: []const u8,
         integer: i64,
         prefix: Prefix,
+        infix: Infix,
+
+        pub fn print(self: ExpressionType, writer: anytype) anyerror!void {
+            switch (self) {
+                .identifier => |i| {
+                    try writer.writeAll(i);
+                },
+                .integer => |int| {
+                    try writer.print("{d}", .{int});
+                },
+                .prefix => |prefix| {
+                    try writer.writeAll("(");
+                    try writer.writeAll(prefix.operator);
+
+                    if (prefix.right) |right| {
+                        try right.print(writer);
+                    }
+                    try writer.writeAll(")");
+                },
+                .infix => |infix| {
+                    try writer.writeAll("(");
+                    try infix.left.print(writer);
+                    try writer.print(" {s} ", .{infix.operator});
+                    try infix.right.print(writer);
+                    try writer.writeAll(")");
+                },
+            }
+        }
     };
 
     pub const Prefix = struct {
         operator: []const u8,
         // TODO: Should this be an optional?
         right: ?*Expression,
+    };
+
+    pub const Infix = struct {
+        operator: []const u8,
+        right: *Expression,
+        left: *Expression,
     };
 };
 
@@ -66,10 +98,34 @@ pub const Statement = struct {
         return stmt;
     }
 
+    pub fn print(self: *const Statement, writer: anytype) !void {
+        try self.type.print(writer);
+    }
+
     pub const StatementType = union(enum) {
         let: Let,
         @"return": ?*Expression,
         expression: ExpressionStatement,
+
+        pub fn print(self: StatementType, writer: anytype) !void {
+            switch (self) {
+                .let => |let| {
+                    try writer.writeAll(let.name);
+                    try writer.writeAll(" = ");
+                    // try let.value.print(writer);
+
+                    try writer.writeAll("//TODO: fix let value expressions");
+                    try writer.writeAll(";");
+                },
+                .@"return" => {
+                    try writer.writeAll("return");
+                    try writer.writeAll(";");
+                },
+                .expression => |expression| {
+                    try expression.expression.print(writer);
+                },
+            }
+        }
     };
 
     pub const Let = struct {
@@ -99,5 +155,11 @@ pub const Program = struct {
 
     pub fn addStatement(self: *Program, statement: Statement) !void {
         try self.statements.append(statement);
+    }
+
+    pub fn print(self: *Program, writer: anytype) !void {
+        for (self.statements.items) |statement| {
+            try statement.print(writer);
+        }
     }
 };
