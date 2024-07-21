@@ -13,7 +13,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
     var line = std.ArrayList(u8).init(allocator);
     const writer = line.writer();
 
-    const eval = Evaluator{};
+    var eval = Evaluator.init(allocator);
+    defer eval.deinit();
 
     try stdout.writeAll(">> ");
     while (stdin.streamUntilDelimiter(writer, '\n', null)) {

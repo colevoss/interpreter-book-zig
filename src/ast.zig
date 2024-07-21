@@ -46,7 +46,7 @@ pub const Expression = struct {
         return expression;
     }
 
-    pub fn evaluate(self: *Expression, evaluator: *const eval.Evaluator) Object {
+    pub fn evaluate(self: *Expression, evaluator: *eval.Evaluator) Object {
         return evaluator.evaluateExpression(self);
     }
 
@@ -245,7 +245,7 @@ pub const Statement = struct {
         return stmt;
     }
 
-    pub fn evaluate(self: *Statement, evaluator: *const eval.Evaluator) Object {
+    pub fn evaluate(self: *Statement, evaluator: *eval.Evaluator) Object {
         return evaluator.evaluateStatement(self);
     }
 
@@ -381,7 +381,7 @@ pub const Program = struct {
         }
     }
 
-    pub fn evaluate(self: *const Program, evaluator: *const eval.Evaluator) Object {
+    pub fn evaluate(self: *const Program, evaluator: *eval.Evaluator) Object {
         return evaluator.evaluateProgram(self);
     }
 };

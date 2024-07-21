@@ -11,7 +11,6 @@ pub const TokenType = enum(u8) {
     // operators
     assign,
     plus,
-
     minus,
     bang,
     asterisk,
@@ -48,6 +47,21 @@ pub const TokenType = enum(u8) {
     // equality
     eq,
     neq,
+
+    pub fn string(self: TokenType) []const u8 {
+        return switch (self) {
+            .assign => "=",
+            .plus => "+",
+            .minus => "-",
+            .asterisk => "*",
+            .slash => "/",
+            .lt => "<",
+            .gt => ">",
+            .eq => "==",
+            .neq => "!=",
+            else => "",
+        };
+    }
 };
 
 pub const Token = struct {
