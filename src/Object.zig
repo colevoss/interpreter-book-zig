@@ -37,7 +37,7 @@ pub const Value = union(enum) {
             },
 
             .@"error" => |err| {
-                try writer.print("ERROR: {s}", err);
+                try writer.print("ERROR: {s}", .{err});
             },
         }
     }
