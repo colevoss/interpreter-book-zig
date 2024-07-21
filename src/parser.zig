@@ -81,7 +81,7 @@ pub const Parser = struct {
         self.arena.deinit();
     }
 
-    pub fn errorCount(self: *Parser) usize {
+    pub fn errorCount(self: *const Parser) usize {
         return self.errors.items.len;
     }
 
@@ -234,14 +234,18 @@ pub const Parser = struct {
         };
     }
 
-    fn parsePrefixExpression(self: *Parser) !*Expression {
+    fn parsePrefixExpression(self: *Parser) !?*Expression {
         const tok = self.currentToken;
         self.nextToken();
 
         const right = self.parseExpression(.prefix);
 
+        if (right == null) {
+            return null;
+        }
+
         const prefix = Expression.Prefix{
-            .right = right,
+            .right = right orelse unreachable,
             .operator = tok.literal,
         };
 
@@ -706,12 +710,12 @@ test "parse prefix expression" {
 
     try expect(minusExpressStatement.type.expression.expression.type == .prefix);
     try expect(minusExpressStatement.type.expression.expression.token.type == .minus);
-    try expect(minusExpressStatement.type.expression.expression.type.prefix.right.?.type == .integer);
+    try expect(minusExpressStatement.type.expression.expression.type.prefix.right.type == .integer);
     try expect(std.mem.eql(u8, minusExpressStatement.type.expression.expression.type.prefix.operator, "-"));
 
     try expect(bangExpressStatement.type.expression.expression.type == .prefix);
     try expect(bangExpressStatement.type.expression.expression.token.type == .bang);
-    try expect(bangExpressStatement.type.expression.expression.type.prefix.right.?.type == .identifier);
+    try expect(bangExpressStatement.type.expression.expression.type.prefix.right.type == .identifier);
     try expect(std.mem.eql(u8, bangExpressStatement.type.expression.expression.type.prefix.operator, "!"));
 }
 
@@ -784,8 +788,8 @@ test "parse boolean expression" {
 
     const bangExpr = program.statements.items[3];
     try expect(bangExpr.type.expression.expression.type == .prefix);
-    try expect(bangExpr.type.expression.expression.type.prefix.right.?.type == .boolean);
-    try expect(bangExpr.type.expression.expression.type.prefix.right.?.type.boolean == true);
+    try expect(bangExpr.type.expression.expression.type.prefix.right.type == .boolean);
+    try expect(bangExpr.type.expression.expression.type.prefix.right.type.boolean == true);
 }
 
 test "parse grouped expressions" {

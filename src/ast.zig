@@ -1,5 +1,7 @@
 const std = @import("std");
+const Object = @import("Object.zig");
 const token = @import("token.zig");
+const eval = @import("evaluator.zig");
 const Token = token.Token;
 const Allocator = std.mem.Allocator;
 
@@ -44,10 +46,14 @@ pub const Expression = struct {
         return expression;
     }
 
+    pub fn evaluate(self: *Expression, evaluator: *const eval.Evaluator) Object {
+        return evaluator.evaluateExpression(self);
+    }
+
     pub const Prefix = struct {
         operator: []const u8,
         // TODO: Should this be an optional?
-        right: ?*Expression,
+        right: *Expression,
     };
 
     pub const Infix = struct {
@@ -74,7 +80,7 @@ pub const Expression = struct {
 
     pub const ExpressionType = union(enum) {
         identifier: []const u8,
-        integer: i64,
+        integer: isize,
         boolean: bool,
 
         prefix: Prefix,
@@ -152,9 +158,7 @@ pub const Expression = struct {
                     try writer.writeAll("(");
                     try writer.writeAll(prefix.operator);
 
-                    if (prefix.right) |right| {
-                        try right.print(writer);
-                    }
+                    try prefix.right.print(writer);
                     try writer.writeAll(")");
                 },
                 .infix => |infix| {
@@ -239,6 +243,10 @@ pub const Statement = struct {
         };
 
         return stmt;
+    }
+
+    pub fn evaluate(self: *Statement, evaluator: *const eval.Evaluator) Object {
+        return evaluator.evaluateStatement(self);
     }
 
     pub fn print(self: *const Statement, writer: anytype) !void {
@@ -371,5 +379,9 @@ pub const Program = struct {
         for (self.statements.items) |statement| {
             try statement.debug(writer, 0);
         }
+    }
+
+    pub fn evaluate(self: *const Program, evaluator: *const eval.Evaluator) Object {
+        return evaluator.evaluateProgram(self);
     }
 };

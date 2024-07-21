@@ -2,6 +2,10 @@ const std = @import("std");
 const token = @import("token.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
+const Evaluator = @import("evaluator.zig").Evaluator;
+const Repl = @import("Repl.zig");
+
+const log = std.log.scoped(.main);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -9,45 +13,5 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    const input = try allocator.alloc(u8, 2048);
-    defer allocator.free(input);
-
-    const stdin = std.io.getStdIn().reader();
-    const stdout = std.io.getStdOut().writer();
-
-    var line = std.ArrayList(u8).init(allocator);
-    const writer = line.writer();
-
-    try stdout.print(">> ", .{});
-
-    while (stdin.streamUntilDelimiter(writer, '\n', null)) {
-        var lexer = Lexer.init(line.items);
-        var parser = Parser.init(allocator, &lexer);
-        var program = try parser.parseProgram(allocator);
-
-        if (parser.errorCount() > 0) {
-            for (parser.errors.items) |e| {
-                try stdout.print("{s}\n", .{e});
-            }
-        } else {
-            try program.print(stdout);
-            try stdout.writeAll("\n");
-        }
-
-        //
-        // var tok = lexer.nextToken();
-        //
-        // while (tok.type != .eof) : (tok = lexer.nextToken()) {
-        //     std.debug.print("{}:{} {s}: {}\n", .{ tok.start, tok.end, tok.literal, tok.type });
-        // }
-        //
-        // try stdout.print("{s}\n", .{line.items});
-        defer line.clearRetainingCapacity();
-        try stdout.print(">> ", .{});
-    } else |err| switch (err) {
-        else => {
-            std.debug.print("FUCK", .{});
-            return;
-        },
-    }
+    try Repl.run(allocator);
 }
