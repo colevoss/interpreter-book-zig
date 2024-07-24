@@ -5,6 +5,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 const Object = @import("Object.zig");
 const TokenType = @import("token.zig").TokenType;
+const Environment = @import("environment.zig").Environment;
 const math = std.math;
 const testing = std.testing;
 
@@ -16,12 +17,14 @@ const log = std.log.scoped(.evaluator);
 
 pub const Evaluator = struct {
     arena: std.heap.ArenaAllocator,
+    environment: *Environment,
 
-    pub fn init(allocoator: std.mem.Allocator) Evaluator {
+    pub fn init(allocoator: std.mem.Allocator, environment: *Environment) Evaluator {
         const arena = std.heap.ArenaAllocator.init(allocoator);
 
         return .{
             .arena = arena,
+            .environment = environment,
         };
     }
 
@@ -55,7 +58,20 @@ pub const Evaluator = struct {
     pub fn evaluateStatement(self: *Evaluator, statement: *const Statement) Object {
         return switch (statement.type) {
             .expression => |expression| self.evaluateExpression(expression.expression),
-            .@"return" => |expression| {
+
+            .let => |let| let: {
+                const letValueObj = self.evaluateExpression(let.value);
+
+                if (letValueObj.isError()) {
+                    return letValueObj;
+                }
+
+                self.environment.set(let.name, letValueObj) catch unreachable;
+
+                break :let letValueObj;
+            },
+
+            .@"return" => |expression| ret: {
                 const returnExpression = self.arena.allocator().create(Object) catch unreachable;
 
                 returnExpression.* = if (expression) |e|
@@ -63,7 +79,7 @@ pub const Evaluator = struct {
                 else
                     Object.nullVal;
 
-                return .{
+                break :ret .{
                     .value = .{
                         // TODO: I think we are going to need to allocate this :(
                         .@"return" = returnExpression,
@@ -76,7 +92,6 @@ pub const Evaluator = struct {
     }
 
     pub fn evaluateBlockStatement(self: *Evaluator, block: *const Statement.Block) Object {
-        // return self.evalStatements(block.statements.items);
         var object: Object = undefined;
 
         for (block.statements.items) |s| {
@@ -108,19 +123,18 @@ pub const Evaluator = struct {
                 }
             },
 
-            .prefix => {
-                return self.evaluatePrefixExpression(expression);
-            },
+            .prefix => self.evaluatePrefixExpression(expression),
 
-            .infix => {
-                return self.evaluateInfixExpression(expression);
-            },
+            .infix => self.evaluateInfixExpression(expression),
 
-            .@"if" => {
-                return self.evaluateIfExpression(expression);
-            },
+            .@"if" => self.evaluateIfExpression(expression),
 
-            else => Object.nullVal,
+            .identifier => self.evaluateIdnetifierExpression(expression),
+
+            .function => self.evaluateFunctionLiteral(expression),
+            .call => self.evaluateFunctionCallExpression(expression),
+
+            // else => Object.nullVal,
         };
     }
 
@@ -306,6 +320,95 @@ pub const Evaluator = struct {
         return Object.nullVal;
     }
 
+    fn evaluateIdnetifierExpression(self: *Evaluator, expression: *const Expression) Object {
+        std.debug.assert(expression.type == .identifier);
+
+        const environmentObj = self.environment.get(expression.type.identifier);
+
+        if (environmentObj) |obj| {
+            return obj;
+        }
+
+        log.debug("NO IDENTIFIER", .{});
+
+        return Object.initError(self.arena.allocator(), "identifier not found: {s}", .{expression.type.identifier});
+    }
+
+    fn evaluateFunctionLiteral(self: *Evaluator, expression: *const Expression) Object {
+        std.debug.assert(expression.type == .function);
+
+        return Object{
+            .value = .{
+                .function = .{
+                    .env = self.environment,
+                    .parameters = expression.type.function.parameters,
+                    .body = expression.type.function.body,
+                },
+            },
+        };
+    }
+
+    fn evaluateFunctionCallExpression(self: *Evaluator, expression: *const Expression) Object {
+        std.debug.assert(expression.type == .call);
+        log.debug("Evaluating function expression", .{});
+
+        const function = self.evaluateExpression(expression.type.call.function);
+
+        if (function.isError()) {
+            return function;
+        }
+
+        const argCount = expression.type.call.arguments.items.len;
+        var args = std.ArrayList(Object).initCapacity(self.arena.allocator(), argCount) catch unreachable;
+        defer args.deinit();
+
+        for (expression.type.call.arguments.items) |arg| {
+            const argExpression = self.evaluateExpression(arg);
+
+            if (argExpression.isError()) {
+                return argExpression;
+            }
+
+            args.append(argExpression) catch |e| {
+                std.debug.print("{}\n", .{e});
+            };
+        }
+
+        return self.applyFunction(function, args.items) catch unreachable;
+    }
+
+    fn applyFunction(self: *Evaluator, function: Object, args: []Object) !Object {
+        if (function.value != .function) {
+            return Object.initError(
+                self.arena.allocator(),
+                "not a function: {s}",
+                .{function.value.string(self.arena.allocator()) catch unreachable},
+            );
+        }
+
+        var enclosed = Environment.initEnclosed(self.arena.allocator(), function.value.function.env);
+
+        // map function literal parameters to the arguments being passed to the function call
+        for (function.value.function.parameters.items, 0..) |param, argIdx| {
+            try enclosed.set(param, args[argIdx]);
+        }
+
+        self.environment = &enclosed;
+
+        defer {
+            self.environment = enclosed.outer.?;
+            enclosed.deinit();
+        }
+
+        const result = self.evaluateBlockStatement(function.value.function.body);
+
+        if (result.value == .@"return") {
+            return result.value.@"return".*;
+        }
+
+        return result;
+    }
+
     fn isTruthyObj(object: Object) bool {
         switch (object.value) {
             .boolean => |b| return b,
@@ -314,47 +417,6 @@ pub const Evaluator = struct {
         }
     }
 };
-
-test "evaluate integer expresionos" {
-    var e = Evaluator.init(std.testing.allocator);
-    defer e.deinit();
-
-    var expression: Expression = undefined;
-    expression.type = .{ .integer = 1 };
-
-    const o = e.evaluate(&expression);
-
-    try expect(o.value.integer == 1);
-}
-
-test "evaluate boolean expresionos" {
-    var e = Evaluator.init(std.testing.allocator);
-    defer e.deinit();
-
-    var expression: Expression = undefined;
-    expression.type = .{ .boolean = true };
-
-    const o = e.evaluate(&expression);
-
-    try expect(o.value.boolean == true);
-}
-
-test "evaluate expression statements" {
-    var e = Evaluator.init(std.testing.allocator);
-    defer e.deinit();
-
-    var expression: Expression = undefined;
-    expression.type = .{ .boolean = true };
-
-    var statement: Statement = undefined;
-    statement.type = .{
-        .expression = .{ .expression = &expression },
-    };
-
-    const object = e.evaluate(&statement);
-
-    try expect(object.value == .boolean);
-}
 
 fn testEvaluateCode(allocator: std.mem.Allocator, evaluator: *Evaluator, code: []const u8) !Object {
     var lex = Lexer.init(code);
@@ -371,6 +433,56 @@ fn TestCase(comptime expected: type) type {
     return struct { []const u8, expected };
 }
 
+test "evaluate integer expresionos" {
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var e = Evaluator.init(std.testing.allocator, &env);
+    defer e.deinit();
+
+    var expression: Expression = undefined;
+    expression.type = .{ .integer = 1 };
+
+    const o = e.evaluate(&expression);
+
+    try expect(o.value.integer == 1);
+}
+
+test "evaluate boolean expresionos" {
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var e = Evaluator.init(std.testing.allocator, &env);
+    defer e.deinit();
+
+    var expression: Expression = undefined;
+    expression.type = .{ .boolean = true };
+
+    const o = e.evaluate(&expression);
+
+    try expect(o.value.boolean == true);
+}
+
+test "evaluate expression statements" {
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var e = Evaluator.init(std.testing.allocator, &env);
+    defer e.deinit();
+
+    var expression: Expression = undefined;
+    expression.type = .{ .boolean = true };
+
+    var statement: Statement = undefined;
+    statement.type = .{
+        .expression = .{ .expression = &expression },
+    };
+
+    const object = e.evaluate(&statement);
+
+    try expect(object.value == .boolean);
+}
+
 test "evaluate bang prefix" {
     const cases = [_]TestCase(bool){
         .{ "!true", false },
@@ -378,7 +490,10 @@ test "evaluate bang prefix" {
         .{ "!1", false },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -393,7 +508,10 @@ test "evaluate minus prefix" {
         .{ "--10", 10 },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -421,7 +539,10 @@ test "evaluate infix integer expression" {
         .{ "(5 + 10 * 2 + 15 / 3) * 2 + -10", 50 },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -433,7 +554,10 @@ test "evaluate infix integer expression" {
 test "evaluate infix nullifies on math error" {
     const allocator = std.testing.allocator;
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     const max = math.maxInt(isize);
@@ -490,7 +614,10 @@ test "evaluate infix boolean expressions" {
         .{ "(1 > 2) == false", true },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -531,7 +658,10 @@ test "evaluate if statements" {
         .{ "if (1 == 2) { 10 } else { 20 }", 20 },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -560,7 +690,10 @@ test "evaluate return expressions" {
         },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
@@ -588,12 +721,172 @@ test "error handling" {
         .{ "if (true * 1) { false * false }", "type mismatch: boolean (true) and integer (1)" },
     };
 
-    var evaluator = Evaluator.init(testing.allocator);
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
     defer evaluator.deinit();
 
     for (cases) |case| {
         const object = try testEvaluateCode(std.testing.allocator, &evaluator, case[0]);
         // std.debug.print("{s} results in:\n\t\"{s}\"\n", .{ case[0], object.value.@"error" });
         try expect(std.mem.eql(u8, object.value.@"error", case[1]));
+    }
+}
+
+test "evaluate let statements" {
+    const cases = [_]TestCase(isize){
+        .{ "let a = 10; a;", 10 },
+        .{ "let a = 10 + 10; a;", 20 },
+        .{
+            \\let a = 10;
+            \\if (true) {
+            \\  a;
+            \\}
+            ,
+            10,
+        },
+        .{
+            \\let a = 10;
+            \\let b = 20;
+            \\if (a > b) {
+            \\  a;
+            \\} else {
+            \\  b;
+            \\}
+            ,
+            20,
+        },
+        .{
+            \\let a = 10;
+            \\let b = 20;
+            \\if (a < b) {
+            \\  a;
+            \\} else {
+            \\  b;
+            \\}
+            ,
+            10,
+        },
+        .{
+            \\let a = 10;
+            \\let b = 20;
+            \\let c = 30
+            \\if (a + b == c) {
+            \\  a;
+            \\} else {
+            \\  b;
+            \\}
+            ,
+            10,
+        },
+    };
+
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
+    defer evaluator.deinit();
+
+    for (cases) |case| {
+        const object = try testEvaluateCode(std.testing.allocator, &evaluator, case[0]);
+        // std.debug.print("{s} results in:\n{d}\n", .{ case[0], object.value.integer });
+        try expect(object.value.integer == case[1]);
+        env.reset();
+    }
+}
+
+test "testing memory leak" {
+    const cases = [_]TestCase(isize){.{
+        \\let a = 10;
+        \\let b = 20;
+        \\a + b;
+        ,
+        30,
+    }};
+
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
+    defer evaluator.deinit();
+
+    for (cases) |case| {
+        const object = try testEvaluateCode(std.testing.allocator, &evaluator, case[0]);
+        // std.debug.print("{s} results in:\n{d}\n", .{ case[0], object.value.integer });
+        try expect(object.value.integer == case[1]);
+    }
+}
+
+test "evaluate function literal" {
+    const code =
+        \\let x = fn(x) {
+        \\  x + 2;
+        \\}
+        \\
+    ;
+
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
+    defer evaluator.deinit();
+
+    var lex = Lexer.init(code);
+    var parser = Parser.init(std.testing.allocator, &lex);
+    defer parser.deinit();
+
+    var program = try parser.parseProgram(std.testing.allocator);
+    defer program.deinit();
+
+    const obj = evaluator.evaluate(&program);
+
+    try expect(obj.value == .function);
+    try expect(obj.value.function.parameters.items.len == 1);
+    try expect(std.mem.eql(u8, obj.value.function.parameters.items[0], "x"));
+}
+
+test "evaluate function call" {
+    const cases = [_]TestCase(isize){
+        .{
+            \\let addOne = fn(x) {
+            \\  return x + 1;
+            \\};
+            \\
+            \\let addTwo = fn(x) {
+            \\  let addedOne = addOne(x);
+            \\  return addOne(addedOne);
+            \\};
+            \\
+            \\return 4 + addTwo(1);
+            ,
+            7,
+        },
+        // THIS CRASHES
+        // .{
+        //     \\let newAdder = fn(x) {
+        //     \\  return fn(y) { return x + y; };
+        //     \\}
+        //     \\
+        //     \\let addTwo = newAdder(2);
+        //     \\return addTwo(2);
+        //     ,
+        //     4,
+        // },
+        .{
+            "fn(x) { x + 10; }(5)",
+            15,
+        },
+    };
+
+    var env = Environment.init(testing.allocator);
+    defer env.deinit();
+
+    var evaluator = Evaluator.init(testing.allocator, &env);
+    defer evaluator.deinit();
+
+    for (cases) |case| {
+        const object = try testEvaluateCode(std.testing.allocator, &evaluator, case[0]);
+        try expect(object.value.integer == case[1]);
     }
 }

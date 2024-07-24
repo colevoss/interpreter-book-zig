@@ -2,6 +2,7 @@ const std = @import("std");
 const Object = @import("Object.zig");
 const token = @import("token.zig");
 const eval = @import("evaluator.zig");
+const env = @import("environment.zig");
 const Token = token.Token;
 const Allocator = std.mem.Allocator;
 

@@ -1,4 +1,6 @@
 const std = @import("std");
+const ast = @import("ast.zig");
+const environment = @import("environment.zig");
 
 const log = std.log.scoped(.object);
 
@@ -29,6 +31,8 @@ pub const Type = enum {
     boolean,
     null,
 
+    function,
+
     @"return",
     @"error",
 };
@@ -37,6 +41,7 @@ pub const Value = union(Type) {
     integer: isize,
     boolean: bool,
     null: u1,
+    function: Function,
 
     @"return": *Self,
     @"error": []const u8,
@@ -64,6 +69,23 @@ pub const Value = union(Type) {
                 try writer.writeAll("null");
             },
 
+            .function => |func| {
+                try writer.writeAll("fn(");
+
+                for (func.parameters.items, 0..) |param, i| {
+                    try writer.writeAll(param);
+
+                    if (i < func.parameters.items.len - 1) {
+                        try writer.writeAll(", ");
+                    }
+                }
+
+                try writer.writeAll(") {\n");
+
+                try func.body.print(writer);
+                try writer.writeAll("\n}");
+            },
+
             .@"return" => |val| {
                 try val.value.inspect(writer);
             },
@@ -73,4 +95,14 @@ pub const Value = union(Type) {
             },
         }
     }
+
+    const Function = struct {
+        parameters: std.ArrayList([]const u8),
+        body: *ast.Statement.Block,
+        env: *environment.Environment,
+    };
+
+    // const FunctionCall = struct {
+    //     arguments: std.ArrayList([] const u8),
+    // };
 };

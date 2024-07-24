@@ -1,0 +1,7 @@
+let add = fn(a) {
+  return fn(b) {
+    return a + b;
+  };
+};
+
+let addTwo = add(2)(2);
